@@ -1,0 +1,6 @@
+{
+  "name": "Resume AI Parser & Matching Evaluator",
+  "description": "An AI-powered system that extracts detailed resume information, categorizes competencies, and matches candidates to customized job descriptions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
