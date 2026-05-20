@@ -282,30 +282,45 @@ function computeMatcherFallback(parsedResume: any, jobDesc: string): any {
 }
 
 /**
- * Utility helper to retry calls to Gemini API in case of 503 unavailable or 429 quota exceptions.
+ * Utility helper to retry calls to Gemini API with model fallback capability.
+ * In case of 503 unavailable or 429 quota exceptions, it will attempt multiple models
+ * (gemini-3.5-flash -> gemini-3.1-flash-lite) with exponential backoff.
  */
-async function callGeminiWithRetry(fn: () => Promise<any>, maxRetries = 2, delayMs = 1500): Promise<any> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      attempt++;
-      const errMsg = err?.message || String(err || "");
-      const errStatus = err?.status || err?.code || "";
-      const isTransient = errStatus === "UNAVAILABLE" || errStatus === 503 || errStatus === 429 ||
-                          errStatus === "RESOURCE_EXHAUSTED" || 
-                          /503|429|UNAVAILABLE|quota|rate|limit|exhausted/i.test(errMsg);
-      
-      if (isTransient && attempt <= maxRetries) {
-        console.warn(`[Gemini API Retry] Status ${errStatus} (${errMsg.substring(0, 100)}). Retrying in ${delayMs}ms... (Attempt ${attempt}/${maxRetries})`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-        delayMs = delayMs * 2; // linear/exponential scale
-        continue;
+async function callGeminiWithFallback(fn: (modelName: string) => Promise<any>): Promise<any> {
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
+  let lastError: any = null;
+
+  for (const modelName of modelsToTry) {
+    let attempt = 0;
+    const maxRetries = 2;
+    let delayMs = 1500;
+
+    while (attempt <= maxRetries) {
+      try {
+        return await fn(modelName);
+      } catch (err: any) {
+        lastError = err;
+        attempt++;
+        const errMsg = err?.message || String(err || "");
+        const errStatus = err?.status || err?.code || "";
+        const isTransient = errStatus === "UNAVAILABLE" || errStatus === 503 || errStatus === 429 ||
+                            errStatus === "RESOURCE_EXHAUSTED" || 
+                            /503|429|UNAVAILABLE|quota|rate|limit|exhausted/i.test(errMsg);
+        
+        if (isTransient && attempt <= maxRetries) {
+          console.warn(`[Gemini API Retry - ${modelName}] Status ${errStatus} (${errMsg.substring(0, 100)}). Retrying in ${delayMs}ms... (Attempt ${attempt}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          delayMs = delayMs * 2; // exponential backup
+          continue;
+        }
+        
+        console.warn(`[Gemini API - ${modelName} failed] Status ${errStatus}. MSG: ${errMsg.substring(0, 150)}.`);
+        break; // Proceeding to the next model
       }
-      throw err;
     }
   }
+
+  throw lastError;
 }
 
 /**
@@ -340,8 +355,8 @@ app.post("/api/parse-resume", async (req: Request, res: Response) => {
       });
     }
 
-    const response = await callGeminiWithRetry(() => ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await callGeminiWithFallback((modelName) => ai.models.generateContent({
+      model: modelName,
       contents: contentsParts,
       config: {
         responseMimeType: "application/json",
@@ -471,8 +486,8 @@ app.post("/api/analyze-match", async (req: Request, res: Response) => {
 
     const payloadText = `Parsed Resume Data:\n${JSON.stringify(parsedResume, null, 2)}\n\nJob Description:\n${jobDescription}`;
 
-    const response = await callGeminiWithRetry(() => ai.models.generateContent({
-      model: "gemini-3.5-flash",
+    const response = await callGeminiWithFallback((modelName) => ai.models.generateContent({
+      model: modelName,
       contents: [
         {
           text: `You are an elite HR recruitment assistant. Compare this parsed resume structure against the target job description. Generate a highly professional score, visual alignment statistics, candidate gaps, strengths, culture fit hints, training suggestions, and 3-5 tailored technical/behavioral interview questions.\n\nCompare:\n${payloadText}`,
@@ -550,9 +565,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server is running at http://0.0.0.0:${PORT}`);
-  });
+  if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server is running at http://0.0.0.0:${PORT}`);
+    });
+  }
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
