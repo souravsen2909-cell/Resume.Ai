@@ -211,11 +211,17 @@ export default function App() {
         })
       });
 
+      const responseText = await response.text();
       if (!response.ok) {
-        throw new Error("Missing server credential flags or API keys.");
+        throw new Error(responseText || "Missing server credential flags or API keys.");
       }
 
-      const matchAnalysis: MatchAnalysis = await response.json();
+      let matchAnalysis: MatchAnalysis;
+      try {
+        matchAnalysis = JSON.parse(responseText);
+      } catch (parseErr) {
+        throw new Error("Response is not valid JSON.");
+      }
       const end = performance.now();
       const speedStr = ((end - start) / 1000).toFixed(2) + "s";
       setExtractionSpeed(speedStr);
@@ -264,12 +270,26 @@ export default function App() {
           })
         });
 
+        const responseText = await response.text();
         if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || "Failed custom resume extraction. Checking local simulation fallback...");
+          let errMsg = "Failed custom resume extraction. Checking local simulation fallback...";
+          try {
+            const errData = JSON.parse(responseText);
+            errMsg = errData.error || errMsg;
+          } catch {
+            if (responseText && responseText.trim()) {
+              errMsg = responseText;
+            }
+          }
+          throw new Error(errMsg);
         }
 
-        const parsedResult: ParsedResume = await response.json();
+        let parsedResult: ParsedResume;
+        try {
+          parsedResult = JSON.parse(responseText);
+        } catch (jsonErr) {
+          throw new Error("The parser returned a non-JSON response format.");
+        }
         const newId = `loaded-${Date.now()}`;
         const newCandidate: ParsedResume = {
           ...parsedResult,
@@ -315,12 +335,26 @@ export default function App() {
         })
       });
 
+      const responseText = await response.text();
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Remote parse failed.");
+        let errMsg = "Remote parse failed.";
+        try {
+          const errData = JSON.parse(responseText);
+          errMsg = errData.error || errMsg;
+        } catch {
+          if (responseText && responseText.trim()) {
+            errMsg = responseText;
+          }
+        }
+        throw new Error(errMsg);
       }
 
-      const parsedResult: ParsedResume = await response.json();
+      let parsedResult: ParsedResume;
+      try {
+        parsedResult = JSON.parse(responseText);
+      } catch (jsonErr) {
+        throw new Error("The parser returned a non-JSON format.");
+      }
       const newId = `text-${Date.now()}`;
       const newCandidate: ParsedResume = {
         ...parsedResult,
