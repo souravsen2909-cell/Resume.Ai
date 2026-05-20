@@ -2,7 +2,6 @@ import express, { Request, Response } from "express";
 import path from "path";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
-import { createServer as createViteServer } from "vite";
 
 // Load environment variables
 dotenv.config();
@@ -422,10 +421,12 @@ async function callGeminiWithFallback(fn: (modelName: string) => Promise<any>): 
 
   let lastError: any = null;
 
+  const isVercel = !!process.env.VERCEL;
+
   for (const modelName of activeModels) {
     let attempt = 0;
-    const maxRetries = 2;
-    let delayMs = 1500;
+    const maxRetries = isVercel ? 0 : 2;
+    let delayMs = isVercel ? 500 : 1500;
 
     while (attempt <= maxRetries) {
       try {
@@ -693,6 +694,7 @@ app.post("/api/analyze-match", async (req: Request, res: Response) => {
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     console.log("Starting server in Development Mode...");
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
