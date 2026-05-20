@@ -60,6 +60,8 @@ export interface ParsedResume {
   projects: Project[];
   certifications: Certification[];
   languages: string[];
+  _isFallback?: boolean;
+  _fallbackReason?: string;
 }
 
 export interface MatchAnalysis {
@@ -75,6 +77,8 @@ export interface MatchAnalysis {
   gaps: string[];
   suggestedImprovement: string;
   interviewQuestions: string[]; // Tailored questions
+  _isFallback?: boolean;
+  _fallbackReason?: string;
 }
 
 export interface HRJobDescription {

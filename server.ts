@@ -205,7 +205,9 @@ function parseResumeFallback(rawText: string, fileData?: string, mimeType?: stri
     education,
     projects,
     certifications,
-    languages: ["English"]
+    languages: ["English"],
+    _isFallback: true,
+    _fallbackReason: "Model capacity busy, operating in edge fallback parser mode."
   };
 }
 
@@ -273,8 +275,37 @@ function computeMatcherFallback(parsedResume: any, jobDesc: string): any {
       `Reflecting on your tenure at ${parsedResume.experience?.[0]?.company || 'your previous company'}, what was a major roadblock you encountered and how did you resolve it?`,
       `How do you handle technical communication gaps when collaborating with cross-functional team partners?`,
       `In what ways do you evaluate layout balance and negative workspace patterns to maintain highly polished standards?`
-    ]
+    ],
+    _isFallback: true,
+    _fallbackReason: "Model capacity busy, operating in edge fallback analyzer mode."
   };
+}
+
+/**
+ * Utility helper to retry calls to Gemini API in case of 503 unavailable or 429 quota exceptions.
+ */
+async function callGeminiWithRetry(fn: () => Promise<any>, maxRetries = 2, delayMs = 1500): Promise<any> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      attempt++;
+      const errMsg = err?.message || String(err || "");
+      const errStatus = err?.status || err?.code || "";
+      const isTransient = errStatus === "UNAVAILABLE" || errStatus === 503 || errStatus === 429 ||
+                          errStatus === "RESOURCE_EXHAUSTED" || 
+                          /503|429|UNAVAILABLE|quota|rate|limit|exhausted/i.test(errMsg);
+      
+      if (isTransient && attempt <= maxRetries) {
+        console.warn(`[Gemini API Retry] Status ${errStatus} (${errMsg.substring(0, 100)}). Retrying in ${delayMs}ms... (Attempt ${attempt}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        delayMs = delayMs * 2; // linear/exponential scale
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 /**
@@ -309,7 +340,7 @@ app.post("/api/parse-resume", async (req: Request, res: Response) => {
       });
     }
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(() => ai.models.generateContent({
       model: "gemini-3.5-flash",
       contents: contentsParts,
       config: {
@@ -405,7 +436,7 @@ app.post("/api/parse-resume", async (req: Request, res: Response) => {
           required: ["contactInfo", "summary", "careerLevel", "skills", "experience", "education"],
         },
       },
-    });
+    }));
 
     const parsedJsonText = response.text;
     if (!parsedJsonText) {
@@ -440,7 +471,7 @@ app.post("/api/analyze-match", async (req: Request, res: Response) => {
 
     const payloadText = `Parsed Resume Data:\n${JSON.stringify(parsedResume, null, 2)}\n\nJob Description:\n${jobDescription}`;
 
-    const response = await ai.models.generateContent({
+    const response = await callGeminiWithRetry(() => ai.models.generateContent({
       model: "gemini-3.5-flash",
       contents: [
         {
@@ -481,7 +512,7 @@ app.post("/api/analyze-match", async (req: Request, res: Response) => {
           ],
         },
       },
-    });
+    }));
 
     const matchJsonText = response.text;
     if (!matchJsonText) {

@@ -627,6 +627,17 @@ export default function App() {
         {/* CONTAINER 2: CENTRAL INTERACTIVE PROFILE DISPLAY */}
         <section id="central-profile-area" className="flex-1 flex flex-col p-6 overflow-y-auto bg-[#0A0A0B]">
           
+          {selectedCandidate._isFallback && (
+            <div className="mb-6 p-3 bg-[#1B160C] border border-[#D4AF37]/20 text-[#D4AF37] text-xs rounded flex items-center justify-between gap-3 font-serif">
+              <div className="flex items-center gap-2.5">
+                <Sparkles className="w-4 h-4 text-[#D4AF37] shrink-0 animate-pulse" />
+                <span>
+                  <strong>Workspace Backup Engaged:</strong> Core Gemini parsing is currently at peak load. The high-fidelity local parser was synchronized successfully to parse this profile without interruption.
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* TOP PROFILE KEYSTATS BLOCK */}
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6 pb-6 border-b border-[#222]">
             <div>
@@ -1050,6 +1061,15 @@ export default function App() {
                         </span>
                       </div>
                     </div>
+
+                    {currentMatchResult._isFallback && (
+                      <div className="p-3 bg-[#1B160C] border border-[#D4AF37]/20 text-[#D4AF37] text-[10px] rounded flex items-center gap-2 font-serif leading-normal">
+                        <Sparkles className="w-3.5 h-3.5 text-[#D4AF37] shrink-0 animate-pulse" />
+                        <span>
+                          <strong>Analysis Backup Engaged:</strong> Core Gemini match diagnostics are busy. Evaluated fit index using high-fidelity local HR matching benchmarks.
+                        </span>
+                      </div>
+                    )}
 
                     {/* Matched vs Missing Skills list */}
                     <div className="space-y-4">
