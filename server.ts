@@ -118,6 +118,29 @@ function parseResumeFallback(rawText: string, fileData?: string, mimeType?: stri
     { category: "Business & Agile", keywords: ["scrum", "product roadmap", "wireframing", "amplitude", "mixpanel", "analytics", "seo", "jira", "confluence"] }
   ];
 
+  const acronymMap: Record<string, string> = {
+    "ci/cd": "CI/CD",
+    "gcp": "GCP",
+    "aws": "AWS",
+    "nlp": "NLP",
+    "llm": "LLM",
+    "ml": "ML",
+    "rag": "RAG",
+    "seo": "SEO",
+    "k8s": "Kubernetes",
+    "nextjs": "Next.js",
+    "next.js": "Next.js",
+    "fastapi": "FastAPI",
+    "pytorch": "PyTorch",
+    "tensorflow": "TensorFlow",
+    "golang": "Go",
+    "c++": "C++",
+    "sql": "SQL",
+    "html": "HTML",
+    "css": "CSS",
+    "django": "Django"
+  };
+
   const extractedSkills: any[] = [];
   skillBuckets.forEach(bucket => {
     const matched: string[] = [];
@@ -125,7 +148,8 @@ function parseResumeFallback(rawText: string, fileData?: string, mimeType?: stri
       const escaped = keyword.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, "\\$&");
       const r = new RegExp(`\\b${escaped}\\b`, 'i');
       if (r.test(text)) {
-        matched.push(keyword === "k8s" ? "Kubernetes" : keyword.charAt(0).toUpperCase() + keyword.slice(1));
+        const standardName = acronymMap[keyword.toLowerCase()] || (keyword.charAt(0).toUpperCase() + keyword.slice(1));
+        matched.push(standardName);
       }
     });
 
@@ -281,16 +305,59 @@ function computeMatcherFallback(parsedResume: any, jobDesc: string): any {
   };
 }
 
+const disabledModels = new Set<string>();
+
+/**
+ * Utility helper to clean and normalize verbose Gemini error messages, 
+ * stripping nested JSON and preventing long scary console stackdumps.
+ */
+function cleanGeminiErrorMessage(err: any): string {
+  let message = err?.message || String(err || "");
+  
+  if (message.trim().startsWith("{")) {
+    try {
+      const parsed = JSON.parse(message);
+      if (parsed?.error?.message) {
+        message = parsed.error.message;
+      }
+    } catch {
+      // Ignore JSON parse errors and stick to raw text
+    }
+  }
+
+  if (/quota|limit|rate|exhausted/i.test(message)) {
+    return "API Quota or rate limits exceeded.";
+  }
+  if (/503|unavailable|overload|capacity|demand/i.test(message)) {
+    return "Model is currently experiencing high demand.";
+  }
+  
+  return message.length > 90 ? message.substring(0, 90) + "..." : message;
+}
+
 /**
  * Utility helper to retry calls to Gemini API with model fallback capability.
  * In case of 503 unavailable or 429 quota exceptions, it will attempt multiple models
- * (gemini-3.5-flash -> gemini-3.1-flash-lite) with exponential backoff.
+ * (gemini-3.5-flash -> gemini-3.1-flash-lite -> gemini-flash-latest) with exponential backoff,
+ * but will immediately fall back to the next model on explicit quota/rate exhaustion (429/RESOURCE_EXHAUSTED) without retrying.
+ * Models that return permanent quota/rate limits are indexed in memory to bypass them inside the server lifecycle instantly.
  */
 async function callGeminiWithFallback(fn: (modelName: string) => Promise<any>): Promise<any> {
-  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];
+  const modelsToTry = ["gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+  
+  // Filter out models that are cached as disabled due to quota exhaustion
+  let activeModels = modelsToTry.filter(m => !disabledModels.has(m));
+  
+  // If all tried models have been disabled, reset the cache set to allow a fresh evaluation
+  if (activeModels.length === 0) {
+    console.warn("[Gemini API Fallback] All Gemini models were previously marked as quota exhausted. Resetting cache to retry from scratch.");
+    disabledModels.clear();
+    activeModels = [...modelsToTry];
+  }
+
   let lastError: any = null;
 
-  for (const modelName of modelsToTry) {
+  for (const modelName of activeModels) {
     let attempt = 0;
     const maxRetries = 2;
     let delayMs = 1500;
@@ -303,18 +370,28 @@ async function callGeminiWithFallback(fn: (modelName: string) => Promise<any>): 
         attempt++;
         const errMsg = err?.message || String(err || "");
         const errStatus = err?.status || err?.code || "";
-        const isTransient = errStatus === "UNAVAILABLE" || errStatus === 503 || errStatus === 429 ||
-                            errStatus === "RESOURCE_EXHAUSTED" || 
-                            /503|429|UNAVAILABLE|quota|rate|limit|exhausted/i.test(errMsg);
+        
+        const isQuotaExhausted = errStatus === 429 || 
+                                 errStatus === "RESOURCE_EXHAUSTED" || 
+                                 /429|quota|rate|limit|exhausted/i.test(errMsg);
+        
+        if (isQuotaExhausted) {
+          console.warn(`[Gemini API - ${modelName}] Quota state triggered. Cache registry updated. Progressing to the next model...`);
+          disabledModels.add(modelName);
+          break; // Break the retry loop for this model, fallback to the next model immediately
+        }
+
+        const isTransient = errStatus === "UNAVAILABLE" || errStatus === 503 ||
+                            /503|UNAVAILABLE/i.test(errMsg);
         
         if (isTransient && attempt <= maxRetries) {
-          console.warn(`[Gemini API Retry - ${modelName}] Status ${errStatus} (${errMsg.substring(0, 100)}). Retrying in ${delayMs}ms... (Attempt ${attempt}/${maxRetries})`);
+          console.warn(`[Gemini API Retry - ${modelName}] Status ${errStatus} (${cleanGeminiErrorMessage(err)}). Retrying in ${delayMs}ms... (Attempt ${attempt}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, delayMs));
           delayMs = delayMs * 2; // exponential backup
           continue;
         }
         
-        console.warn(`[Gemini API - ${modelName} failed] Status ${errStatus}. MSG: ${errMsg.substring(0, 150)}.`);
+        console.warn(`[Gemini API - ${modelName} failed] Status: ${errStatus}. Reason: ${cleanGeminiErrorMessage(err)}.`);
         break; // Proceeding to the next model
       }
     }
@@ -461,7 +538,7 @@ app.post("/api/parse-resume", async (req: Request, res: Response) => {
     const parsedResumeObj = JSON.parse(parsedJsonText);
     res.json(parsedResumeObj);
   } catch (error: any) {
-    console.warn("Gemini Service Error or high-demand capacity (503) triggered. Serving custom structured parsing fallback...", error?.message || error);
+    console.warn(`[Gemini API] Serving local backup parser. (${cleanGeminiErrorMessage(error)})`);
     try {
       const fallbackPayload = parseResumeFallback(rawText || "", fileData, mimeType);
       res.json(fallbackPayload);
@@ -536,7 +613,7 @@ app.post("/api/analyze-match", async (req: Request, res: Response) => {
 
     res.json(JSON.parse(matchJsonText));
   } catch (error: any) {
-    console.warn("Gemini Service Error or high-demand capacity (503) triggered in analyzer. Serving heuristic matching analyzer fallback...", error?.message || error);
+    console.warn(`[Gemini API] Serving local match heuristics backup. (${cleanGeminiErrorMessage(error)})`);
     try {
       const fallbackAnalysis = computeMatcherFallback(parsedResume, jobDescription || "");
       res.json(fallbackAnalysis);
